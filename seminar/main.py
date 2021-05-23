@@ -25,23 +25,27 @@ parser.add_argument('--stddev', type=float, default=0.1,
 args = parser.parse_args()
 
 dataset = Dataset(args.data)
-train_pos_pairs = np.column_stack(dataset.trainMatrix.nonzero())
+train, testRatings, testNegatives = dataset.trainMatrix, dataset.testRatings, dataset.testNegatives # For MLP
+# train = np.column_stack(dataset.trainMatrix.nonzero()) #For MF
 test_ratings, test_negatives = (dataset.testRatings, dataset.testNegatives)
 
+
+#%%
+# MLPModel(dataset.num_users, dataset.num_items)
 model = MFModel(dataset.num_users, dataset.num_items,
                 args.embedding_dim - 1, args.regularization, args.stddev)
 
 
-def evaluate(model, test_ratings, test_negatives, K=10):
-    (hits, ndcgs) = evaluate_model(model, test_ratings, test_negatives, K=K,
-                                   num_thread=1)
-    return np.array(hits).mean(), np.array(ndcgs).mean()
-
-
-hr, ndcg = evaluate(model, test_ratings, test_negatives, K=10)
-print('Epoch %4d:\t HR=%.4f, NDCG=%.4f\t' % (0, hr, ndcg))
-
-for epoch in trange(args.epochs):
-    _ = model.fit(train_pos_pairs, learning_rate=args.learning_rate, num_negatives=args.negatives)
-    hr, ndcg = evaluate(model, test_ratings, test_negatives, K=10)
-    print('Epoch %4d:\t HR=%.4f, NDCG=%.4f\t' % (epoch + 1, hr, ndcg))
+# def evaluate(model, test_ratings, test_negatives, K=10):
+#     (hits, ndcgs) = evaluate_model(model, test_ratings, test_negatives, K=K,
+#                                    num_thread=1)
+#     return np.array(hits).mean(), np.array(ndcgs).mean()
+#
+#
+# hr, ndcg = evaluate(model, test_ratings, test_negatives, K=10)
+# print('Epoch %4d:\t HR=%.4f, NDCG=%.4f\t' % (0, hr, ndcg))
+#
+# for epoch in trange(args.epochs):
+#     _ = model.fit(train, learning_rate=args.learning_rate, num_negatives=args.negatives)
+#     hr, ndcg = evaluate(model, test_ratings, test_negatives, K=10)
+#     print('Epoch %4d:\t HR=%.4f, NDCG=%.4f\t' % (epoch + 1, hr, ndcg))

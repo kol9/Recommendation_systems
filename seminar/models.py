@@ -1,5 +1,10 @@
 import numpy as np
-from tqdm import tqdm, trange
+import tensorflow as tf
+from keras.regularizers import l2
+from keras import initializers
+from keras.models import Sequential, Model
+from keras.layers import Embedding, Input, Dense, merge, Reshape, Flatten, Dropout
+from keras.optimizers import Adagrad, Adam, SGD, RMSprop
 
 
 class BaseModel:
@@ -117,3 +122,91 @@ class MFModel(BaseModel):
         self.user_bias = np.load(file_prefix + 'user_bias.npy')
         self.item_bias = np.load(file_prefix + 'item_bias.npy')
         self.bias = np.load(file_prefix + 'bias.npy')[0]
+
+
+class MLPModel(BaseModel):
+    def __init__(self, num_users, num_items, layers=[64, 32, 16, 8], reg_layers=[64, 32, 16, 8], learning_rate=0.01):
+        self.layers = layers
+        self.num_users = num_users
+        self.num_items = num_items
+        self.model = self._get_model(num_users, num_items, layers=layers, reg_layers=reg_layers)
+        self.model.compile(optimizer=Adam(lr=learning_rate), loss='binary_crossentropy')
+
+    def _init_normal(self, shape):
+        initializers.RandomNormal()
+        return initializers.RandomNormal(shape, stddev=0.01)
+
+    def _get_model(self, num_users, num_items, layers, reg_layers):
+        # FIXME MODEL VERY SHIT, EBANIY V ROT!!!!!!!!!!!!
+        assert len(layers) == len(reg_layers)
+        self.num_layer = len(layers)
+        num_layer = len(layers)
+
+        user_input = Input(shape=(1,), dtype='int32', name='user_input')
+        item_input = Input(shape=(1,), dtype='int32', name='item_input')
+
+        MLP_Embedding_User = Embedding(input_dim=num_users, output_dim=int(layers[0] / 2), name='user_embedding',
+                                       embeddings_initializer=self._init_normal,
+                                       embeddings_regularizer=l2(reg_layers[0]), input_length=1)
+        MLP_Embedding_Item = Embedding(input_dim=num_items, output_dim=int(layers[0] / 2), name='item_embedding',
+                                       embeddings_initializer=self._init_normal,
+                                       embeddings_regularizer=l2(reg_layers[0]), input_length=1)
+
+        # Crucial to flatten an embedding vector!
+        user_latent = Sequential([MLP_Embedding_User(user_input), Flatten()])
+        item_latent = Sequential([MLP_Embedding_Item(user_input), Flatten()])
+
+        # The 0-th layer is the concatenation of embedding layers
+        vector = tf.keras.layers.Concatenate([user_latent, item_latent])
+
+        # MLP layers
+
+        for idx in range(1, num_layer):
+            layer = Dense(layers[idx], kernel_regularizer=l2(reg_layers[idx]), activation='relu', name='layer%d' % idx)
+            vector = layer(vector)
+
+        # Final prediction layer
+        prediction = Dense(1, activation='sigmoid', kernel_initializer='lecun_uniform', name='prediction')(vector)
+
+        model = Model(input=[user_input, item_input],
+                      output=prediction)
+
+        return model
+
+    def _get_train_instances(self, train, num_negatives):
+        user_input, item_input, labels = [], [], []
+        num_users = train.shape[0]
+        for (u, i) in train.keys():
+            # positive instance
+            user_input.append(u)
+            item_input.append(i)
+            labels.append(1)
+            # negative instances
+            for t in range(num_negatives):
+                j = np.random.randint(self.num_items)
+                while train.has_key((u, j)):
+                    j = np.random.randint(self.num_items)
+                user_input.append(u)
+                item_input.append(j)
+                labels.append(0)
+        return user_input, item_input, labels
+
+    def fit(self, train, learning_rate, num_negatives):
+        user_input, item_input, labels = self._get_train_instances(train, num_negatives)
+        self.model.fit([np.array(user_input), np.array(item_input)],  # input
+                       np.array(labels),  # labels
+                       batch_size=256, nb_epoch=1, verbose=0, shuffle=True)
+
+    def predict(self, pairs, batch_size, verbose):
+        return self.model.predict(pairs, batch_size=batch_size, verbose=verbose)
+
+    def _file_name(self):
+        return 'trained_models/' + 'MLPModel' + '_u' + str(self.num_users) + \
+               '_i' + str(self.num_items) + \
+               '_dim' + str(self.layers[0] / 2) + '_layers' + str(self.layers) + '_.h5'
+
+    def save_weights(self):
+        self.model.save_weights(self._file_name(), overwrite=True)
+
+    def load_weights(self):
+        pass
