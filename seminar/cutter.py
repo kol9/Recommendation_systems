@@ -24,6 +24,6 @@ with open(ds_train) as f:
     with open(ds_result_train, 'w') as res_file:
         line = f.readline().strip()
         while line != '':
-            if random.randint(1, ds_train_size) < want_size:
+            if random.uniform(0, 1) < want_size / ds_train_size:
                 res_file.write(line + '\n')
             line = f.readline().strip()
