@@ -125,41 +125,31 @@ class MFModel(BaseModel):
 
 
 class MLPModel(BaseModel):
-    def __init__(self, num_users, num_items, layers=[64, 32, 16, 8], reg_layers=[64, 32, 16, 8], learning_rate=0.01):
+    def __init__(self, num_users, num_items, layers=[64, 32, 16, 8], reg_layers=[0, 0, 0, 0], learning_rate=0.01):
         self.layers = layers
         self.num_users = num_users
         self.num_items = num_items
         self.model = self._get_model(num_users, num_items, layers=layers, reg_layers=reg_layers)
         self.model.compile(optimizer=Adam(lr=learning_rate), loss='binary_crossentropy')
 
-    def _init_normal(self, shape):
-        initializers.RandomNormal()
-        return initializers.RandomNormal(shape, stddev=0.01)
-
     def _get_model(self, num_users, num_items, layers, reg_layers):
-        # FIXME MODEL VERY SHIT, EBANIY V ROT!!!!!!!!!!!!
         assert len(layers) == len(reg_layers)
-        self.num_layer = len(layers)
         num_layer = len(layers)
 
         user_input = Input(shape=(1,), dtype='int32', name='user_input')
         item_input = Input(shape=(1,), dtype='int32', name='item_input')
 
         MLP_Embedding_User = Embedding(input_dim=num_users, output_dim=int(layers[0] / 2), name='user_embedding',
-                                       embeddings_initializer=self._init_normal,
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
                                        embeddings_regularizer=l2(reg_layers[0]), input_length=1)
         MLP_Embedding_Item = Embedding(input_dim=num_items, output_dim=int(layers[0] / 2), name='item_embedding',
-                                       embeddings_initializer=self._init_normal,
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
                                        embeddings_regularizer=l2(reg_layers[0]), input_length=1)
 
         # Crucial to flatten an embedding vector!
-        user_latent = Sequential([MLP_Embedding_User(user_input), Flatten()])
-        item_latent = Sequential([MLP_Embedding_Item(user_input), Flatten()])
-
-        # The 0-th layer is the concatenation of embedding layers
-        vector = tf.keras.layers.Concatenate([user_latent, item_latent])
-
-        # MLP layers
+        user_latent = Flatten()(MLP_Embedding_User(user_input))
+        item_latent = Flatten()(MLP_Embedding_Item(item_input))
+        vector = tf.keras.layers.Concatenate(axis=-1)([user_latent, item_latent])
 
         for idx in range(1, num_layer):
             layer = Dense(layers[idx], kernel_regularizer=l2(reg_layers[idx]), activation='relu', name='layer%d' % idx)
@@ -168,8 +158,8 @@ class MLPModel(BaseModel):
         # Final prediction layer
         prediction = Dense(1, activation='sigmoid', kernel_initializer='lecun_uniform', name='prediction')(vector)
 
-        model = Model(input=[user_input, item_input],
-                      output=prediction)
+        model = Model(inputs=[user_input, item_input],
+                      outputs=prediction)
 
         return model
 
@@ -184,7 +174,7 @@ class MLPModel(BaseModel):
             # negative instances
             for t in range(num_negatives):
                 j = np.random.randint(self.num_items)
-                while train.has_key((u, j)):
+                while (u, j) in train:
                     j = np.random.randint(self.num_items)
                 user_input.append(u)
                 item_input.append(j)
