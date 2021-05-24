@@ -185,7 +185,7 @@ class MLPModel(BaseModel):
         user_input, item_input, labels = self._get_train_instances(train, num_negatives)
         self.model.fit([np.array(user_input), np.array(item_input)],  # input
                        np.array(labels),  # labels
-                       batch_size=256, nb_epoch=1, verbose=0, shuffle=True)
+                       batch_size=256, epochs=1, verbose=0, shuffle=True)
 
     def predict(self, pairs, batch_size, verbose):
         return self.model.predict(pairs, batch_size=batch_size, verbose=verbose)
