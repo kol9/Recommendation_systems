@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 from keras import initializers
-from keras.layers import Embedding, Input, Dense, Flatten
+from keras.layers import Embedding, Input, Dense, Flatten, Lambda
 from keras.models import Model
 from keras.optimizers import Adam
 from keras.regularizers import l2
@@ -124,10 +124,6 @@ class MFModel(BaseModel):
         self.bias = np.load(file_prefix + 'bias.npy')[0]
 
 
-def init_normal():
-    return initializers.RandomNormal(mean=0.0, stddev=0.01)
-
-
 class MLPModel(BaseModel):
     def __init__(self, num_users, num_items, layers=[64, 32, 16, 8], reg_layers=[0, 0, 0, 0], learning_rate=0.01):
         self.layers = layers
@@ -144,10 +140,10 @@ class MLPModel(BaseModel):
         item_input = Input(shape=(1,), dtype='int32', name='item_input')
 
         MLP_Embedding_User = Embedding(input_dim=num_users, output_dim=int(layers[0] / 2), name='user_embedding',
-                                       embeddings_initializer=init_normal,
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
                                        embeddings_regularizer=l2(reg_layers[0]), input_length=1)
         MLP_Embedding_Item = Embedding(input_dim=num_items, output_dim=int(layers[0] / 2), name='item_embedding',
-                                       embeddings_initializer=init_normal,
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
                                        embeddings_regularizer=l2(reg_layers[0]), input_length=1)
 
         # Crucial to flatten an embedding vector!
@@ -169,6 +165,7 @@ class MLPModel(BaseModel):
 
     def _get_train_instances(self, train, num_negatives):
         user_input, item_input, labels = [], [], []
+        num_users = train.shape[0]
         for (u, i) in train.keys():
             # positive instance
             user_input.append(u)
@@ -202,61 +199,68 @@ class MLPModel(BaseModel):
         self.model.save_weights(self._file_name(), overwrite=True)
 
     def load_weights(self):
-        self.model.load_weights(self._file_name())
+        pass
 
 
 class NeuMFModel(BaseModel):
-    def __init__(self, num_users, num_items, mf_dim=16, layers=[64, 32, 16, 8], reg_layers=[0, 0, 0, 0], reg_mf=0.0,
-                 learning_rate=0.01):
+    def __init__(self, num_users, num_items, mf_dim=8, layers=[64, 32, 16, 8], reg_layers=[0, 0, 0, 0], reg_mf=0,
+                 learning_rate=0.01, alpha=0.5):
         self.layers = layers
         self.num_users = num_users
         self.num_items = num_items
         self.model = self._get_model(num_users, num_items, mf_dim=mf_dim, layers=layers,
-                                     reg_layers=reg_layers, reg_mf=reg_mf)
+                                     reg_layers=reg_layers, reg_mf=reg_mf, alpha=alpha)
         self.model.compile(optimizer=Adam(lr=learning_rate), loss='binary_crossentropy')
 
-    def _get_model(self, num_users, num_items, mf_dim, layers, reg_layers, reg_mf):
+    def _get_model(self, num_users, num_items, mf_dim, layers, reg_layers, reg_mf, alpha):
         assert len(layers) == len(reg_layers)
-        num_layer = len(layers)    # layers number in MLP
+        num_layer = len(layers)  # layers number in MLP
 
         # inputs
         user_input = Input(shape=(1,), dtype='int32', name='user_input')
         item_input = Input(shape=(1,), dtype='int32', name='item_input')
 
         MF_Embedding_User = Embedding(input_dim=num_users, output_dim=mf_dim, name='mf_embedding_user',
-                                      embeddings_initializer=init_normal, W_regularizer=l2(reg_mf), input_length=1)
+                                      embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                      embeddings_regularizer=l2(reg_mf), input_length=1)
         MF_Embedding_Item = Embedding(input_dim=num_items, output_dim=mf_dim, name='mf_embedding_item',
-                                      embeddings_initializer=init_normal, W_regularizer=l2(reg_mf), input_length=1)
+                                      embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                      embeddings_regularizer=l2(reg_mf), input_length=1)
 
-        MLP_Embedding_User = Embedding(input_dim=num_users, output_dim=layers[0] / 2, name="mlp_embedding_user",
-                                       embeddings_initializer=init_normal, W_regularizer=l2(reg_layers[0]),
+        MLP_Embedding_User = Embedding(input_dim=num_users, output_dim=layers[0] // 2, name="mlp_embedding_user",
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                       embeddings_regularizer=l2(reg_layers[0]),
                                        input_length=1)
-        MLP_Embedding_Item = Embedding(input_dim=num_items, output_dim=layers[0] / 2, name='mlp_embedding_item',
-                                       embeddings_initializer=init_normal, W_regularizer=l2(reg_layers[0]),
+        MLP_Embedding_Item = Embedding(input_dim=num_items, output_dim=layers[0] // 2, name='mlp_embedding_item',
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                       embeddings_regularizer=l2(reg_layers[0]),
                                        input_length=1)
 
         # MF
         mf_user_latent = Flatten()(MF_Embedding_User(user_input))
         mf_item_latent = Flatten()(MF_Embedding_Item(item_input))
-        mf_vector = tf.keras.layers.Concatenate(axis=-1)([mf_user_latent, mf_item_latent],
-                                                         mode='mul')  # element-wise multiply
+        mf_vector = tf.keras.layers.Multiply()([mf_user_latent, mf_item_latent])  # element-wise multiply
 
         # MLP
         mlp_user_latent = Flatten()(MLP_Embedding_User(user_input))
         mlp_item_latent = Flatten()(MLP_Embedding_Item(item_input))
-        mlp_vector = tf.keras.layers.Concatenate(axis=-1)([mlp_user_latent, mlp_item_latent], mode='concat')
+        mlp_vector = tf.keras.layers.Concatenate(axis=-1)([mlp_user_latent, mlp_item_latent])
         for idx in range(1, num_layer):
-            layer = Dense(layers[idx], W_regularizer=l2(reg_layers[idx]), activation='relu', name="layer%d" % idx)
+            layer = Dense(layers[idx], kernel_regularizer=l2(reg_layers[idx]), activation='relu', name="layer%d" % idx)
             mlp_vector = layer(mlp_vector)
 
         # MF and MLP
-        predict_vector = tf.keras.layers.Concatenate(axis=-1)([mf_vector, mlp_vector], mode='concat')
+        # Concatenate MF and MLP parts
+        mf_vector = Lambda(lambda x: x * alpha)(mf_vector)
+        mlp_vector = Lambda(lambda x: x * (1 - alpha))(mlp_vector)
+
+        predict_vector = tf.keras.layers.Concatenate(axis=-1)([mf_vector, mlp_vector])
 
         prediction = Dense(1, activation='sigmoid', kernel_initializer='lecun_uniform', name="prediction")(
             predict_vector)
 
-        model = Model(input=[user_input, item_input],
-                      output=prediction)
+        model = Model(inputs=[user_input, item_input],
+                      outputs=[prediction])
 
         return model
 
