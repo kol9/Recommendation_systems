@@ -42,7 +42,10 @@ class Dataset(object):
                 arr = line.split("\t")
                 negatives = []
                 for x in arr[1: ]:
-                    negatives.append(int(x))
+                    try:
+                        negatives.append(int(x))
+                    except BaseException:
+                        pass
                 negativeList.append(negatives)
                 line = f.readline()
         return negativeList
