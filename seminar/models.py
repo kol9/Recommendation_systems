@@ -1,10 +1,10 @@
 import numpy as np
 import tensorflow as tf
-from keras.regularizers import l2
 from keras import initializers
-from keras.models import Sequential, Model
-from keras.layers import Embedding, Input, Dense, merge, Reshape, Flatten, Dropout
-from keras.optimizers import Adagrad, Adam, SGD, RMSprop
+from keras.layers import Embedding, Input, Dense, Flatten, Lambda
+from keras.models import Model
+from keras.optimizers import Adam
+from keras.regularizers import l2
 
 
 class BaseModel:
@@ -200,3 +200,127 @@ class MLPModel(BaseModel):
 
     def load_weights(self):
         pass
+
+
+class NeuMFModel(BaseModel):
+    def __init__(self, num_users, num_items, mf_dim=8, layers=[64, 32, 16, 8], reg_layers=[0, 0, 0, 0], reg_mf=0,
+                 learning_rate=0.01, alpha=0.5):
+        self.layers = layers
+        self.num_users = num_users
+        self.num_items = num_items
+        self.model = self._get_model(num_users, num_items, mf_dim=mf_dim, layers=layers,
+                                     reg_layers=reg_layers, reg_mf=reg_mf, alpha=alpha)
+        self.model.compile(optimizer=Adam(lr=learning_rate), loss='binary_crossentropy')
+
+    def _get_model(self, num_users, num_items, mf_dim, layers, reg_layers, reg_mf, alpha):
+        assert len(layers) == len(reg_layers)
+        num_layer = len(layers)  # layers number in MLP
+
+        # inputs
+        user_input = Input(shape=(1,), dtype='int32', name='user_input')
+        item_input = Input(shape=(1,), dtype='int32', name='item_input')
+
+        MF_Embedding_User = Embedding(input_dim=num_users, output_dim=mf_dim, name='mf_embedding_user',
+                                      embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                      embeddings_regularizer=l2(reg_mf), input_length=1)
+        MF_Embedding_Item = Embedding(input_dim=num_items, output_dim=mf_dim, name='mf_embedding_item',
+                                      embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                      embeddings_regularizer=l2(reg_mf), input_length=1)
+
+        MLP_Embedding_User = Embedding(input_dim=num_users, output_dim=layers[0] // 2, name="mlp_embedding_user",
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                       embeddings_regularizer=l2(reg_layers[0]),
+                                       input_length=1)
+        MLP_Embedding_Item = Embedding(input_dim=num_items, output_dim=layers[0] // 2, name='mlp_embedding_item',
+                                       embeddings_initializer=initializers.RandomNormal(mean=0.0, stddev=0.01),
+                                       embeddings_regularizer=l2(reg_layers[0]),
+                                       input_length=1)
+
+        # MF
+        mf_user_latent = Flatten()(MF_Embedding_User(user_input))
+        mf_item_latent = Flatten()(MF_Embedding_Item(item_input))
+        mf_vector = tf.keras.layers.Multiply()([mf_user_latent, mf_item_latent])  # element-wise multiply
+
+        # MLP
+        mlp_user_latent = Flatten()(MLP_Embedding_User(user_input))
+        mlp_item_latent = Flatten()(MLP_Embedding_Item(item_input))
+        mlp_vector = tf.keras.layers.Concatenate(axis=-1)([mlp_user_latent, mlp_item_latent])
+        for idx in range(1, num_layer):
+            layer = Dense(layers[idx], kernel_regularizer=l2(reg_layers[idx]), activation='relu', name="layer%d" % idx)
+            mlp_vector = layer(mlp_vector)
+
+        # MF and MLP
+        # Concatenate MF and MLP parts
+        mf_vector = Lambda(lambda x: x * alpha)(mf_vector)
+        mlp_vector = Lambda(lambda x: x * (1 - alpha))(mlp_vector)
+
+        predict_vector = tf.keras.layers.Concatenate(axis=-1)([mf_vector, mlp_vector])
+
+        prediction = Dense(1, activation='sigmoid', kernel_initializer='lecun_uniform', name="prediction")(
+            predict_vector)
+
+        model = Model(inputs=[user_input, item_input],
+                      outputs=[prediction])
+
+        return model
+
+    def _load_pretrain_model(self, model, gmf_model, mlp_model, num_layers):
+        gmf_user_embeddings = gmf_model.get_layer('user_embedding').get_weights()
+        gmf_item_embeddings = gmf_model.get_layer('item_embedding').get_weights()
+
+        model.get_layer('mf_embedding_user').set_weights(gmf_user_embeddings)
+        model.get_layer('mf_embedding_item').set_weights(gmf_item_embeddings)
+
+        mlp_user_embeddings = mlp_model.get_layer('user_embedding').get_weights()
+        mlp_item_embeddings = mlp_model.get_layer('item_embedding').get_weights()
+        model.get_layer('mlp_embedding_user').set_weights(mlp_user_embeddings)
+        model.get_layer('mlp_embedding_item').set_weights(mlp_item_embeddings)
+
+        for i in range(1, num_layers):
+            mlp_layer_weights = mlp_model.get_layer('layer%d' % i).get_weights()
+            model.get_layer('layer%d' % i).set_weights(mlp_layer_weights)
+
+        gmf_prediction = gmf_model.get_layer('prediction').get_weights()
+        mlp_prediction = mlp_model.get_layer('prediction').get_weights()
+        new_weights = np.concatenate((gmf_prediction[0], mlp_prediction[0]), axis=0)
+        new_b = gmf_prediction[1] + mlp_prediction[1]
+        model.get_layer('prediction').set_weights([0.5 * new_weights, 0.5 * new_b])
+
+        return model
+
+    def _get_train_instances(self, train, num_negatives):
+        user_input, item_input, labels = [], [], []
+        for (u, i) in train.keys():
+            # positive instance
+            user_input.append(u)
+            item_input.append(i)
+            labels.append(1)
+            # negative instances
+            for t in range(num_negatives):
+                j = np.random.randint(self.num_items)
+                while (u, j) in train:
+                    j = np.random.randint(self.num_items)
+                user_input.append(u)
+                item_input.append(j)
+                labels.append(0)
+        return user_input, item_input, labels
+
+    def fit(self, train, learning_rate, num_negatives):
+        user_input, item_input, labels = self._get_train_instances(train, num_negatives)
+        self.model.fit([np.array(user_input), np.array(item_input)],  # input
+                       np.array(labels),  # labels
+                       batch_size=256, epochs=1, verbose=0, shuffle=True)
+
+    def predict(self, pairs, batch_size, verbose):
+        return self.model.predict(pairs, batch_size=batch_size, verbose=verbose)
+
+    def _file_name(self):
+        return 'trained_models/' + 'NeuMFModel' + '_u' + str(self.num_users) + \
+               '_i' + str(self.num_items) + \
+               '_dim' + str(self.layers[0] / 2) + '_layers' + str(self.layers) + '_.h5'
+
+    def save_weights(self):
+        self.model.save_weights(self._file_name(), overwrite=True)
+
+    def load_weights(self):
+        self.model.load_weights(self._file_name())
